@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_PLATFORM_SECRET_KEY);
 
@@ -17,6 +18,17 @@ function isValidWebhookUrl(value) {
     } catch (error) {
         return false;
     }
+}
+
+function deriveSiteSecret(fulfillmentUrl) {
+    if (!process.env.AETHER_INTERNAL_SECRET) {
+        throw new Error('AETHER_INTERNAL_SECRET is not configured.');
+    }
+
+    return crypto
+        .createHmac('sha256', process.env.AETHER_INTERNAL_SECRET)
+        .update(String(fulfillmentUrl))
+        .digest('hex');
 }
 
 router.get('/public-config', (req, res) => {
@@ -45,6 +57,23 @@ router.get('/public-config', (req, res) => {
     });
 });
 
+router.post('/register-site', (req, res) => {
+    const { fulfillmentUrl } = req.body;
+
+    if (!fulfillmentUrl || !isValidWebhookUrl(fulfillmentUrl)) {
+        return res.status(400).json({ success: false, error: 'A valid fulfillment URL is required.' });
+    }
+
+    try {
+        return res.json({
+            success: true,
+            siteSecret: deriveSiteSecret(fulfillmentUrl),
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 router.post('/process-payment', async (req, res) => {
     const { paymentMethodId, amount, merchantConnectId, templateWebhookUrl } = req.body;
     const amountInt = Number(amount);
@@ -66,6 +95,7 @@ router.post('/process-payment', async (req, res) => {
         // Example: $10.00 checkout = 1000 cents. 1000 * 0.01 = 10 cents platform fee.
         const platformFee = Math.round(amountInt * 0.01);
         const finalPlatformFee = platformFee < 1 && amountInt > 0 ? 1 : platformFee;
+        const fulfillmentSecret = deriveSiteSecret(templateWebhookUrl);
 
         const paymentIntent = await stripe.paymentIntents.create({
             amount: amountInt,
@@ -87,7 +117,7 @@ router.post('/process-payment', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Aether-Signature': process.env.AETHER_INTERNAL_SECRET
+                    'X-Aether-Signature': fulfillmentSecret
                 },
                 body: JSON.stringify({
                     status: 'success',
