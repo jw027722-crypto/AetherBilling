@@ -150,6 +150,53 @@ router.post('/process-payment', async (req, res) => {
     }
 });
 
+router.post('/create-payment-intent', async (req, res) => {
+    const { amount, merchantConnectId, templateWebhookUrl, orderId } = req.body;
+    const amountInt = Number(amount);
+
+    if (!amount || !merchantConnectId || !templateWebhookUrl) {
+        return res.status(400).json({ success: false, error: 'Missing required payment intent parameters.' });
+    }
+
+    if (!Number.isInteger(amountInt) || amountInt <= 0) {
+        return res.status(400).json({ success: false, error: 'Amount must be a positive integer in the lowest currency unit.' });
+    }
+
+    if (!isValidWebhookUrl(templateWebhookUrl)) {
+        return res.status(400).json({ success: false, error: 'Template webhook URL must be a valid http(s) URL.' });
+    }
+
+    try {
+        const platformFee = Math.round(amountInt * 0.01);
+        const finalPlatformFee = platformFee < 1 && amountInt > 0 ? 1 : platformFee;
+
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: amountInt,
+            currency: 'usd',
+            automatic_payment_methods: {
+                enabled: true,
+            },
+            application_fee_amount: finalPlatformFee,
+            transfer_data: {
+                destination: merchantConnectId,
+            },
+            metadata: {
+                orderId: orderId ? String(orderId) : '',
+                templateWebhookUrl,
+            },
+        });
+
+        return res.json({
+            success: true,
+            paymentIntentId: paymentIntent.id,
+            clientSecret: paymentIntent.client_secret,
+        });
+    } catch (error) {
+        console.error('Stripe PaymentIntent creation failed:', error.message);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 router.get('/stripe/callback', async (req, res) => {
     const { code, state } = req.query;
 
