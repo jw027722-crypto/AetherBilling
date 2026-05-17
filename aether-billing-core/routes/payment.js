@@ -4,11 +4,26 @@ const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_PLATFORM_SECRET_KEY);
 
 function getNodeBaseUrl(req) {
+    let baseUrl = '';
     if (process.env.NODE_BASE_URL) {
-        return process.env.NODE_BASE_URL.replace(/\/$/, '');
+        baseUrl = process.env.NODE_BASE_URL.replace(/\/$/, '');
+    } else {
+        baseUrl = `${req.protocol}://${req.get('host')}`;
     }
 
-    return `${req.protocol}://${req.get('host')}`;
+    if (baseUrl === 'http://billing.aetherframeworks.dev') {
+        return 'https://billing.aetherframeworks.dev';
+    }
+
+    return baseUrl;
+}
+
+function configuredValue(value, fallback = '') {
+    if (!value || String(value).includes('YOUR_')) {
+        return fallback;
+    }
+
+    return value;
 }
 
 function isValidWebhookUrl(value) {
@@ -33,8 +48,8 @@ function deriveSiteSecret(fulfillmentUrl) {
 
 router.get('/public-config', (req, res) => {
     const nodeBaseUrl = getNodeBaseUrl(req);
-    const stripeClientId = process.env.STRIPE_CLIENT_ID || '';
-    const publishableKey = process.env.STRIPE_PLATFORM_PUBLIC_KEY || '';
+    const stripeClientId = configuredValue(process.env.STRIPE_CLIENT_ID, 'ca_UQANCaprrc365d1YoGD7Ed5dNK3qEyDH');
+    const publishableKey = configuredValue(process.env.STRIPE_PLATFORM_PUBLIC_KEY, 'pk_test_51TRK2DLo7DsjY6wE9gVZqwBrEmNrVGQr8RUc94YE11FW3BghQRet3GKUi0CiY7ybnU6n2sheio93cTROJc0eLBuD00v9KsqsBR');
     const siteUrl = req.query.site_url ? String(req.query.site_url) : '';
 
     let connectUrl = '';
