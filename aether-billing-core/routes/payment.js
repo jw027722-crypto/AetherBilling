@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_PLATFORM_SECRET_KEY);
+const { applicationFeeAmount } = require('../lib/fees');
 
 function getNodeBaseUrl(req) {
     let baseUrl = '';
@@ -18,11 +19,10 @@ function getNodeBaseUrl(req) {
     return baseUrl;
 }
 
-function configuredValue(value, fallback = '') {
-    if (!value || String(value).includes('YOUR_')) {
-        return fallback;
+function configuredValue(value) {
+    if (!value || String(value).includes('your_') || String(value).includes('YOUR_')) {
+        return '';
     }
-
     return value;
 }
 
@@ -46,10 +46,22 @@ function deriveSiteSecret(fulfillmentUrl) {
         .digest('hex');
 }
 
+function stripeCurrency() {
+    return (process.env.STRIPE_DEFAULT_CURRENCY || 'usd').toLowerCase();
+}
+
+/**
+ * Direct charge on connected account — merchant pays Stripe processing fees.
+ * Platform keeps application_fee_amount (1%).
+ */
+function directChargeOptions(merchantConnectId) {
+    return { stripeAccount: merchantConnectId };
+}
+
 router.get('/public-config', (req, res) => {
     const nodeBaseUrl = getNodeBaseUrl(req);
-    const stripeClientId = configuredValue(process.env.STRIPE_CLIENT_ID, 'ca_UQANCaprrc365d1YoGD7Ed5dNK3qEyDH');
-    const publishableKey = configuredValue(process.env.STRIPE_PLATFORM_PUBLIC_KEY, 'pk_test_51TRK2DLo7DsjY6wE9gVZqwBrEmNrVGQr8RUc94YE11FW3BghQRet3GKUi0CiY7ybnU6n2sheio93cTROJc0eLBuD00v9KsqsBR');
+    const stripeClientId = configuredValue(process.env.STRIPE_CLIENT_ID);
+    const publishableKey = configuredValue(process.env.STRIPE_PLATFORM_PUBLIC_KEY);
     const siteUrl = req.query.site_url ? String(req.query.site_url) : '';
 
     let connectUrl = '';
@@ -63,12 +75,21 @@ router.get('/public-config', (req, res) => {
         }).toString()}`;
     }
 
+    if (!publishableKey) {
+        return res.status(503).json({
+            success: false,
+            error: 'STRIPE_PLATFORM_PUBLIC_KEY is not configured on the billing server.',
+        });
+    }
+
     res.json({
         service: 'aether-billing-core',
         mode: publishableKey.startsWith('pk_live_') ? 'live' : 'test',
         publishableKey,
         connectUrl,
         callbackUrl: `${nodeBaseUrl}/api/v1/stripe/callback`,
+        chargeModel: 'direct',
+        applicationFeePercent: 1,
     });
 });
 
@@ -106,46 +127,43 @@ router.post('/process-payment', async (req, res) => {
     }
 
     try {
-        // Calculate a strict 1% platform fee securely on the server.
-        // Example: $10.00 checkout = 1000 cents. 1000 * 0.01 = 10 cents platform fee.
-        const platformFee = Math.round(amountInt * 0.01);
-        const finalPlatformFee = platformFee < 1 && amountInt > 0 ? 1 : platformFee;
+        const finalPlatformFee = applicationFeeAmount(amountInt);
         const fulfillmentSecret = deriveSiteSecret(templateWebhookUrl);
 
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount: amountInt,
-            currency: 'usd',
-            payment_method: paymentMethodId,
-            confirm: true,
-            automatic_payment_methods: {
-                enabled: true,
-                allow_redirects: 'never'
+        const paymentIntent = await stripe.paymentIntents.create(
+            {
+                amount: amountInt,
+                currency: stripeCurrency(),
+                payment_method: paymentMethodId,
+                confirm: true,
+                automatic_payment_methods: {
+                    enabled: true,
+                    allow_redirects: 'never',
+                },
+                application_fee_amount: finalPlatformFee,
             },
-            application_fee_amount: finalPlatformFee,
-            transfer_data: {
-                destination: merchantConnectId,
-            },
-        });
+            directChargeOptions(merchantConnectId)
+        );
 
         if (paymentIntent.status === 'succeeded') {
             fetch(templateWebhookUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Aether-Signature': fulfillmentSecret
+                    'X-Aether-Signature': fulfillmentSecret,
                 },
                 body: JSON.stringify({
                     status: 'success',
-                    amount_processed: amountInt
-                })
-            }).catch(err => console.error('Async webhook delivery failed down-lane:', err));
+                    amount_processed: amountInt,
+                }),
+            }).catch((err) => console.error('Async webhook delivery failed:', err));
 
             return res.status(200).json({ success: true, chargeId: paymentIntent.id });
         }
 
         return res.status(400).json({ success: false, error: `Payment failed with status: ${paymentIntent.status}` });
     } catch (error) {
-        console.error('Stripe Transaction processing crash:', error.message);
+        console.error('Stripe transaction failed:', error.message);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -167,29 +185,29 @@ router.post('/create-payment-intent', async (req, res) => {
     }
 
     try {
-        const platformFee = Math.round(amountInt * 0.01);
-        const finalPlatformFee = platformFee < 1 && amountInt > 0 ? 1 : platformFee;
+        const finalPlatformFee = applicationFeeAmount(amountInt);
 
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount: amountInt,
-            currency: 'usd',
-            automatic_payment_methods: {
-                enabled: true,
+        const paymentIntent = await stripe.paymentIntents.create(
+            {
+                amount: amountInt,
+                currency: stripeCurrency(),
+                automatic_payment_methods: {
+                    enabled: true,
+                },
+                application_fee_amount: finalPlatformFee,
+                metadata: {
+                    orderId: orderId ? String(orderId) : '',
+                    templateWebhookUrl,
+                },
             },
-            application_fee_amount: finalPlatformFee,
-            transfer_data: {
-                destination: merchantConnectId,
-            },
-            metadata: {
-                orderId: orderId ? String(orderId) : '',
-                templateWebhookUrl,
-            },
-        });
+            directChargeOptions(merchantConnectId)
+        );
 
         return res.json({
             success: true,
             paymentIntentId: paymentIntent.id,
             clientSecret: paymentIntent.client_secret,
+            applicationFeeAmount: finalPlatformFee,
         });
     } catch (error) {
         console.error('Stripe PaymentIntent creation failed:', error.message);
@@ -218,15 +236,15 @@ router.get('/stripe/callback', async (req, res) => {
             stateUrl.searchParams.set('connected_id', merchantConnectId);
             redirectUrl = stateUrl.toString();
         } catch (redirectError) {
-            console.warn('Invalid state URL received from Stripe callback:', state);
-            redirectUrl = `${process.env.NODE_BASE_URL || 'http://localhost:5000'}/?connected_id=${encodeURIComponent(merchantConnectId)}`;
+            console.warn('Invalid state URL from Stripe callback:', state);
+            redirectUrl = `${getNodeBaseUrl(req)}/?connected_id=${encodeURIComponent(merchantConnectId)}`;
         }
 
-        console.log(`Successfully connected Merchant ${merchantConnectId} from site ${state}`);
+        console.log(`Connected merchant ${merchantConnectId} from ${state}`);
         return res.redirect(redirectUrl);
     } catch (error) {
         console.error('Stripe OAuth callback failed:', error.message);
-        return res.status(500).send(`OAuth Handshake Failed: ${error.message}`);
+        return res.status(500).send(`OAuth handshake failed: ${error.message}`);
     }
 });
 

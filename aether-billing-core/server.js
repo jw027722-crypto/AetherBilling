@@ -18,8 +18,11 @@ app.use((req, res, next) => {
     return next();
 });
 
-// Mount the payment orchestration layer
+// Payment (WooCommerce / Elements), Connect, Terminal (mobile POS)
 app.use('/api/v1', paymentRoutes);
+app.use('/api/v1/connect', require('./routes/connect'));
+app.use('/api/v1/terminal', require('./routes/terminal'));
+app.use('/api/v1/ads', require('./routes/ads'));
 
 app.get('/', (req, res) => {
     res.send('Aether Billing API is running.');
@@ -29,7 +32,8 @@ app.get('/health', (req, res) => {
     res.json({
         ok: true,
         service: 'aether-billing-core',
-        version: '2026-05-16-stripe-callback-fix',
+        version: '2026-05-29-direct-connect-terminal',
+        chargeModel: 'direct',
     });
 });
 

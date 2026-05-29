@@ -1,5 +1,7 @@
 node_modules/
 .env
+*.db
+billing.db
 
 aether-payment-gateway/
 
