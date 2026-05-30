@@ -40,6 +40,22 @@ const db = new sqlite3.Database(dbPath, (err) => {
                 revenue REAL DEFAULT 0.0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )`);
+
+            db.run(`CREATE TABLE IF NOT EXISTS installment_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id TEXT UNIQUE,
+                merchant_connect_id TEXT,
+                site_url TEXT,
+                wc_order_id INTEGER,
+                currency TEXT,
+                total_cents INTEGER,
+                installment_amounts TEXT,
+                paid_count INTEGER DEFAULT 0,
+                payment_intent_ids TEXT,
+                next_due_at TEXT,
+                status TEXT DEFAULT 'active',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`);
         });
     }
 });

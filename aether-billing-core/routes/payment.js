@@ -3,28 +3,13 @@ const crypto = require('crypto');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_PLATFORM_SECRET_KEY);
 const { applicationFeeAmount } = require('../lib/fees');
-
-function getNodeBaseUrl(req) {
-    let baseUrl = '';
-    if (process.env.NODE_BASE_URL) {
-        baseUrl = process.env.NODE_BASE_URL.replace(/\/$/, '');
-    } else {
-        baseUrl = `${req.protocol}://${req.get('host')}`;
-    }
-
-    if (baseUrl === 'http://billing.aetherframeworks.dev') {
-        return 'https://billing.aetherframeworks.dev';
-    }
-
-    return baseUrl;
-}
-
-function configuredValue(value) {
-    if (!value || String(value).includes('your_') || String(value).includes('YOUR_')) {
-        return '';
-    }
-    return value;
-}
+const { upsertSite } = require('../lib/sites');
+const {
+    getNodeBaseUrl,
+    configuredValue,
+    terminalOAuthReturnUrl,
+    buildConnectUrl,
+} = require('../lib/urls');
 
 function isValidWebhookUrl(value) {
     try {
@@ -60,20 +45,11 @@ function directChargeOptions(merchantConnectId) {
 
 router.get('/public-config', (req, res) => {
     const nodeBaseUrl = getNodeBaseUrl(req);
-    const stripeClientId = configuredValue(process.env.STRIPE_CLIENT_ID);
     const publishableKey = configuredValue(process.env.STRIPE_PLATFORM_PUBLIC_KEY);
     const siteUrl = req.query.site_url ? String(req.query.site_url) : '';
-
-    let connectUrl = '';
-    if (stripeClientId && siteUrl) {
-        connectUrl = `https://connect.stripe.com/oauth/authorize?${new URLSearchParams({
-            response_type: 'code',
-            client_id: stripeClientId,
-            scope: 'read_write',
-            redirect_uri: `${nodeBaseUrl}/api/v1/stripe/callback`,
-            state: siteUrl,
-        }).toString()}`;
-    }
+    const returnUrl = req.query.return_url ? String(req.query.return_url) : '';
+    const oauthState = returnUrl || siteUrl;
+    const connectUrl = buildConnectUrl(req, oauthState);
 
     if (!publishableKey) {
         return res.status(503).json({
@@ -90,20 +66,30 @@ router.get('/public-config', (req, res) => {
         callbackUrl: `${nodeBaseUrl}/api/v1/stripe/callback`,
         chargeModel: 'direct',
         applicationFeePercent: 1,
+        terminalOnboardingUrl: `${nodeBaseUrl}/api/v1/terminal/onboarding-url`,
+        terminalOAuthReturnUrl: terminalOAuthReturnUrl(req),
     });
 });
 
-router.post('/register-site', (req, res) => {
-    const { fulfillmentUrl } = req.body;
+router.post('/register-site', async (req, res) => {
+    const { fulfillmentUrl, siteUrl, merchantConnectId } = req.body;
 
     if (!fulfillmentUrl || !isValidWebhookUrl(fulfillmentUrl)) {
         return res.status(400).json({ success: false, error: 'A valid fulfillment URL is required.' });
     }
 
     try {
+        const siteSecret = deriveSiteSecret(fulfillmentUrl);
+        if (siteUrl) {
+            await upsertSite({
+                siteUrl,
+                siteSecret,
+                stripeAccountId: merchantConnectId || null,
+            });
+        }
         return res.json({
             success: true,
-            siteSecret: deriveSiteSecret(fulfillmentUrl),
+            siteSecret,
         });
     } catch (error) {
         return res.status(500).json({ success: false, error: error.message });

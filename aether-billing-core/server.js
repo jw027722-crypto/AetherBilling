@@ -32,7 +32,7 @@ app.get('/health', (req, res) => {
     res.json({
         ok: true,
         service: 'aether-billing-core',
-        version: '2026-05-29-direct-connect-terminal',
+        version: '2026-05-30-terminal-oauth',
         chargeModel: 'direct',
     });
 });
